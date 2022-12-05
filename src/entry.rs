@@ -488,22 +488,27 @@ impl<R: Read + Unpin> EntryFields<R> {
 
     /// Unpack as destination directory `dst`.
     async fn unpack_dir(&mut self, dst: &Path) -> io::Result<()> {
-        // If the directory already exists just let it slide
-        match fs::create_dir(dst).await {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                if err.kind() == ErrorKind::AlreadyExists {
-                    let prev = fs::metadata(dst).await;
-                    if prev.map(|m| m.is_dir()).unwrap_or(false) {
-                        return Ok(());
+        let dst = dst.to_owned();
+
+        asyncify(move || {
+            // If the directory already exists just let it slide
+            match std::fs::create_dir(&dst) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    if err.kind() == ErrorKind::AlreadyExists {
+                        let prev = std::fs::metadata(&dst);
+                        if prev.map(|m| m.is_dir()).unwrap_or(false) {
+                            return Ok(());
+                        }
                     }
+                    Err(Error::new(
+                        err.kind(),
+                        format!("{} when creating dir {}", err, dst.display()),
+                    ))
                 }
-                Err(Error::new(
-                    err.kind(),
-                    format!("{} when creating dir {}", err, dst.display()),
-                ))
             }
-        }
+        })
+        .await
     }
 
     /// Returns access to the header of this entry in the archive.
