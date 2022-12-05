@@ -818,31 +818,37 @@ impl<R: Read + Unpin> EntryFields<R> {
     }
 
     async fn validate_inside_dst(&self, dst: &Path, file_dst: &Path) -> io::Result<PathBuf> {
-        // Abort if target (canonical) parent is outside of `dst`
-        let canon_parent = file_dst.canonicalize().map_err(|err| {
-            Error::new(
-                err.kind(),
-                format!("{} while canonicalizing {}", err, file_dst.display()),
-            )
-        })?;
-        let canon_target = dst.canonicalize().map_err(|err| {
-            Error::new(
-                err.kind(),
-                format!("{} while canonicalizing {}", err, dst.display()),
-            )
-        })?;
-        if !canon_parent.starts_with(&canon_target) {
-            let err = TarError::new(
-                &format!(
-                    "trying to unpack outside of destination path: {}",
-                    canon_target.display()
-                ),
-                // TODO: use ErrorKind::InvalidInput here? (minor breaking change)
-                Error::new(ErrorKind::Other, "Invalid argument"),
-            );
-            return Err(err.into());
-        }
-        Ok(canon_target)
+        let dst = dst.to_owned();
+        let file_dst = file_dst.to_owned();
+
+        asyncify(move || {
+            // Abort if target (canonical) parent is outside of `dst`
+            let canon_parent = file_dst.canonicalize().map_err(|err| {
+                Error::new(
+                    err.kind(),
+                    format!("{} while canonicalizing {}", err, file_dst.display()),
+                )
+            })?;
+            let canon_target = dst.canonicalize().map_err(|err| {
+                Error::new(
+                    err.kind(),
+                    format!("{} while canonicalizing {}", err, dst.display()),
+                )
+            })?;
+            if !canon_parent.starts_with(&canon_target) {
+                let err = TarError::new(
+                    &format!(
+                        "trying to unpack outside of destination path: {}",
+                        canon_target.display()
+                    ),
+                    // TODO: use ErrorKind::InvalidInput here? (minor breaking change)
+                    Error::new(ErrorKind::Other, "Invalid argument"),
+                );
+                return Err(err.into());
+            }
+            Ok(canon_target)
+        })
+        .await
     }
 }
 
