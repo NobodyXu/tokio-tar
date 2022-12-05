@@ -640,29 +640,35 @@ impl<R: Read + Unpin> EntryFields<R> {
 
         // Ensure we write a new file rather than overwriting in-place which
         // is attackable; if an existing file is found unlink it.
-        async fn open(dst: &Path) -> io::Result<fs::File> {
-            OpenOptions::new()
+        fn open_blocking(dst: &Path) -> io::Result<std::fs::File> {
+            std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(dst)
-                .await
         }
 
         let mut f = async {
-            let mut f = match open(dst).await {
+            let dst = dst.to_owned();
+
+            let mut f = asyncify(move || match open_blocking(&dst) {
                 Ok(f) => Ok(f),
                 Err(err) => {
                     if err.kind() != ErrorKind::AlreadyExists {
                         Err(err)
                     } else {
-                        match fs::remove_file(dst).await {
-                            Ok(()) => open(dst).await,
-                            Err(ref e) if e.kind() == io::ErrorKind::NotFound => open(dst).await,
+                        match std::fs::remove_file(&dst) {
+                            Ok(()) => open_blocking(&dst),
+                            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
+                                open_blocking(&dst)
+                            }
                             Err(e) => Err(e),
                         }
                     }
                 }
-            }?;
+            })
+            .await
+            .map(fs::File::from_std)?;
+
             for io in self.data.drain(..) {
                 match io {
                     EntryIo::Data(mut d) => {
