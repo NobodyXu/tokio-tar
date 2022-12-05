@@ -584,9 +584,7 @@ impl<R: Read + Unpin> EntryFields<R> {
             #[cfg(windows)]
             async fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
                 let (src, dst) = (src.to_owned(), dst.to_owned());
-                tokio::task::spawn_blocking(|| std::os::windows::fs::symlink_file(src, dst))
-                    .await
-                    .unwrap()
+                asyncify(|| std::os::windows::fs::symlink_file(src, dst)).await
             }
 
             #[cfg(any(unix, target_os = "redox"))]
@@ -952,4 +950,19 @@ fn poll_read_all_internal<R: Read + ?Sized>(
     }
 
     ret
+}
+
+/// Copied from tokio::fs https://docs.rs/tokio/latest/src/tokio/fs/mod.rs.html
+async fn asyncify<F, T>(f: F) -> io::Result<T>
+where
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(res) => res,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "background task failed",
+        )),
+    }
 }
