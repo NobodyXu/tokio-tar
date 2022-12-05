@@ -1,5 +1,6 @@
 use crate::{
-    error::TarError, header::bytes2path, other, pax::pax_extensions, Archive, Header, PaxExtensions,
+    error::TarError, header::bytes2path, other, pax::pax_extensions, utils::canonicalize_blocking,
+    Archive, Header, PaxExtensions,
 };
 use filetime::{self, FileTime};
 use std::{
@@ -486,12 +487,7 @@ impl<R: Read + Unpin> EntryFields<R> {
                 })?;
             }
 
-            parent.canonicalize().map_err(|err| {
-                Error::new(
-                    err.kind(),
-                    format!("{} while canonicalizing {}", err, parent.display()),
-                )
-            })
+            canonicalize_blocking(&parent)
         })
         .await?;
 
@@ -873,18 +869,8 @@ impl<R: Read + Unpin> EntryFields<R> {
 
     fn validate_inside_dst_blocking(dst: &Path, file_dst: &Path) -> io::Result<PathBuf> {
         // Abort if target (canonical) parent is outside of `dst`
-        let canon_parent = file_dst.canonicalize().map_err(|err| {
-            Error::new(
-                err.kind(),
-                format!("{} while canonicalizing {}", err, file_dst.display()),
-            )
-        })?;
-        let canon_target = dst.canonicalize().map_err(|err| {
-            Error::new(
-                err.kind(),
-                format!("{} while canonicalizing {}", err, dst.display()),
-            )
-        })?;
+        let canon_parent = canonicalize_blocking(file_dst)?;
+        let canon_target = canonicalize_blocking(dst)?;
         if !canon_parent.starts_with(&canon_target) {
             let err = TarError::new(
                 &format!(
