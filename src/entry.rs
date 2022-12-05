@@ -1,5 +1,9 @@
 use crate::{
-    error::TarError, header::bytes2path, other, pax::pax_extensions, utils::canonicalize_blocking,
+    error::TarError,
+    header::bytes2path,
+    other,
+    pax::pax_extensions,
+    utils::{canonicalize, canonicalize_blocking},
     Archive, Header, PaxExtensions,
 };
 use filetime::{self, FileTime};
@@ -273,13 +277,7 @@ impl<R: Read + Unpin> Entry<R> {
     /// # Ok(()) }) }
     /// ```
     pub async fn unpack_in<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<bool> {
-        let dst = dst.as_ref();
-        let dst = tokio::fs::canonicalize(dst).await.map_err(|err| {
-            Error::new(
-                err.kind(),
-                format!("{} while canonicalizing {}", err, dst.display()),
-            )
-        })?;
+        let dst = canonicalize(dst.as_ref()).await?;
 
         self.unpack_in_inner(&dst).await
     }

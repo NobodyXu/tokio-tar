@@ -18,7 +18,9 @@ use tokio_stream::*;
 use crate::{
     entry::{EntryFields, EntryIo},
     error::TarError,
-    other, Entry, GnuExtSparseHeader, GnuSparseHeader, Header,
+    other,
+    utils::canonicalize,
+    Entry, GnuExtSparseHeader, GnuSparseHeader, Header,
 };
 
 /// A top-level representation of an archive file.
@@ -223,13 +225,7 @@ impl<R: Read + Unpin> Archive<R> {
     /// # Ok(()) }) }
     /// ```
     pub async fn unpack<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<()> {
-        let dst = dst.as_ref();
-        let dst = tokio::fs::canonicalize(dst).await.map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!("{} while canonicalizing {}", err, dst.display()),
-            )
-        })?;
+        let dst = canonicalize(dst.as_ref()).await?;
 
         let mut entries = self.entries()?;
         let mut pinned = Pin::new(&mut entries);
