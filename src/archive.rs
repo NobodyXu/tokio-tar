@@ -223,11 +223,20 @@ impl<R: Read + Unpin> Archive<R> {
     /// # Ok(()) }) }
     /// ```
     pub async fn unpack<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<()> {
+        let dst = dst.as_ref();
+        let dst = tokio::fs::canonicalize(dst).await.map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("{} while canonicalizing {}", err, dst.display()),
+            )
+        })?;
+
         let mut entries = self.entries()?;
         let mut pinned = Pin::new(&mut entries);
         while let Some(entry) = pinned.next().await {
             let mut file = entry.map_err(|e| TarError::new("failed to iterate over archive", e))?;
-            file.unpack_in(dst.as_ref()).await?;
+            // dst is already canonicalized.
+            file.unpack_in_inner(&dst).await?;
         }
         Ok(())
     }

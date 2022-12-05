@@ -15,7 +15,6 @@ use std::{
 };
 use tokio::{
     fs,
-    fs::OpenOptions,
     io::{self, AsyncRead as Read, AsyncReadExt, AsyncSeekExt},
 };
 
@@ -273,7 +272,20 @@ impl<R: Read + Unpin> Entry<R> {
     /// # Ok(()) }) }
     /// ```
     pub async fn unpack_in<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<bool> {
-        self.fields.unpack_in(dst.as_ref()).await
+        let dst = dst.as_ref();
+        let dst = tokio::fs::canonicalize(dst).await.map_err(|err| {
+            Error::new(
+                err.kind(),
+                format!("{} while canonicalizing {}", err, dst.display()),
+            )
+        })?;
+
+        self.unpack_in_inner(&dst).await
+    }
+
+    /// * `dst` - must be canonicalized.
+    pub(super) async fn unpack_in_inner(&mut self, dst: &Path) -> io::Result<bool> {
+        self.fields.unpack_in(dst).await
     }
 
     /// Indicate whether extended file attributes (xattrs on Unix) are preserved
@@ -414,6 +426,7 @@ impl<R: Read + Unpin> EntryFields<R> {
         Ok(Some(pax_extensions(self.pax_extensions.as_ref().unwrap())))
     }
 
+    /// * `dst` - must be canonicalized.
     async fn unpack_in(&mut self, dst: &Path) -> io::Result<bool> {
         // Notes regarding bsdtar 2.8.3 / libarchive 2.8.3:
         // * Leading '/'s are trimmed. For example, `///test` is treated as
@@ -466,20 +479,36 @@ impl<R: Read + Unpin> EntryFields<R> {
             None => return Ok(false),
         };
 
-        let dst = dst.to_owned();
-
-        let canon_target = asyncify(move || {
+        let canon_parent = asyncify(move || {
             if parent.symlink_metadata().is_err() {
                 std::fs::create_dir_all(&parent).map_err(|e| {
                     TarError::new(&format!("failed to create `{}`", parent.display()), e)
                 })?;
             }
 
-            Self::validate_inside_dst_blocking(&dst, &parent)
+            parent.canonicalize().map_err(|err| {
+                Error::new(
+                    err.kind(),
+                    format!("{} while canonicalizing {}", err, parent.display()),
+                )
+            })
         })
         .await?;
 
-        self.unpack(Some(&canon_target), &file_dst)
+        // dst is already canonicalized
+        if !canon_parent.starts_with(dst) {
+            let err = TarError::new(
+                &format!(
+                    "trying to unpack outside of destination path: {}",
+                    dst.display()
+                ),
+                // TODO: use ErrorKind::InvalidInput here? (minor breaking change)
+                Error::new(ErrorKind::Other, "Invalid argument"),
+            );
+            return Err(err.into());
+        }
+
+        self.unpack(Some(dst), &file_dst)
             .await
             .map_err(|e| TarError::new(&format!("failed to unpack `{}`", file_dst.display()), e))?;
 
