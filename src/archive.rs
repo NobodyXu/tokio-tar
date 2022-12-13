@@ -178,7 +178,7 @@ impl<R: Unpin> Archive<R> {
     }
 }
 
-impl<R: Read + Unpin> Archive<R> {
+impl<R: BufRead + Unpin> Archive<R> {
     /// Construct an stream over the entries in this archive.
     ///
     /// Note that care must be taken to consider each entry within an archive in
@@ -257,7 +257,7 @@ impl<R: Read + Unpin> Archive<R> {
 }
 
 /// Stream of `Entry`s.
-pub struct Entries<R: Read + Unpin> {
+pub struct Entries<R> {
     archive: Archive<R>,
     current: (u64, Option<Header>, usize, Option<GnuExtSparseHeader>),
     gnu_longname: Option<Vec<u8>>,
@@ -284,7 +284,7 @@ macro_rules! ready_err {
     };
 }
 
-impl<R: Read + Unpin> Stream for Entries<R> {
+impl<R: BufRead + Unpin> Stream for Entries<R> {
     type Item = io::Result<Entry<Archive<R>>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
