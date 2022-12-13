@@ -10,7 +10,9 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    io::{self, AsyncRead as Read, AsyncReadExt},
+    io::{
+        self, AsyncBufRead as BufRead, AsyncBufReadExt, AsyncRead as Read, AsyncReadExt, BufReader,
+    },
     sync::Mutex,
 };
 use tokio_stream::*;
@@ -56,9 +58,21 @@ pub struct ArchiveBuilder<R: Read + Unpin> {
     ignore_zeros: bool,
 }
 
-impl<R: Read + Unpin> ArchiveBuilder<R> {
+impl<R: Read + Unpin> ArchiveBuilder<BufReader<R>> {
     /// Create a new builder.
     pub fn new(obj: R) -> Self {
+        Self::with_bufread(BufReader::new(obj))
+    }
+
+    /// Create a new builder.
+    pub fn with_buf_capacity(cap: usize, obj: R) -> Self {
+        Self::with_bufread(BufReader::with_capacity(cap, obj))
+    }
+}
+
+impl<R: BufRead + Unpin> ArchiveBuilder<R> {
+    /// Create a new builder.
+    pub fn with_bufread(obj: R) -> Self {
         ArchiveBuilder {
             unpack_xattrs: false,
             preserve_permissions: false,
@@ -67,7 +81,9 @@ impl<R: Read + Unpin> ArchiveBuilder<R> {
             obj,
         }
     }
+}
 
+impl<R: Read + Unpin> ArchiveBuilder<R> {
     /// Indicate whether extended file attributes (xattrs on Unix) are preserved
     /// when unpacking this archive.
     ///
