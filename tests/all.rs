@@ -453,7 +453,7 @@ async fn unpack_old_style_bsd_dir() {
     t!(ar.unpack(td.path()).await);
 
     // Iterating
-    let rdr = Cursor::new(ar.into_inner().map_err(|_| ()).unwrap().into_inner());
+    let rdr = ar.into_inner().map_err(|_| ()).unwrap().into_inner();
     let mut ar = Archive::new(rdr);
     let mut entries = t!(ar.entries());
 
@@ -486,15 +486,19 @@ async fn handling_incorrect_file_size() {
     assert!(ar.unpack(td.path()).await.is_err());
 
     // Iterating
-    let rdr = Cursor::new(ar.into_inner().map_err(|_| ()).unwrap().into_inner());
+    let rdr = ar.into_inner().map_err(|_| ()).unwrap().into_inner();
     let mut ar = Archive::new(rdr);
     let mut entries = t!(ar.entries());
+    let mut cnt = 0_u64;
     while let Some(fr) = entries.next().await {
+        cnt += 1;
         if fr.is_err() {
             return;
         }
     }
-    panic!("Should have errorred");
+    if cnt != 0 {
+        panic!("Should have errorred");
+    }
 }
 
 #[tokio::test]
@@ -1064,7 +1068,7 @@ async fn name_with_slash_doesnt_fool_long_link_and_bsd_compat() {
     t!(ar.unpack(td.path()).await);
 
     // Iterating
-    let rdr = Cursor::new(ar.into_inner().map_err(|_| ()).unwrap().into_inner());
+    let rdr = ar.into_inner().map_err(|_| ()).unwrap().into_inner();
     let mut ar = Archive::new(rdr);
     let mut entries = t!(ar.entries());
     while let Some(entry) = entries.next().await {
