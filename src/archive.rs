@@ -1,7 +1,7 @@
 use std::{
     cmp,
     collections::VecDeque,
-    future::{poll_fn, Future},
+    future::poll_fn,
     ops::DerefMut,
     path::Path,
     pin::Pin,
@@ -24,7 +24,7 @@ use crate::{
     entry::{EntryFields, EntryIo},
     error::TarError,
     header::SparseEntry,
-    other, Entry, GnuExtSparseHeader, GnuSparseHeader, Header,
+    other, Entry, GnuExtSparseHeader, Header,
 };
 
 /// A top-level representation of an archive file.
