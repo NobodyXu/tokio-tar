@@ -349,6 +349,41 @@ impl<R: Read + Unpin> EntryFields<R> {
         self.read_to_end(&mut v).await.map(|_| v)
     }
 
+    pub fn is_pax_sparse(&mut self) -> bool {
+        if let Some(ref pax) = self.pax_extensions {
+            let mut extensions = PaxExtensions::new(pax).filter_map(|f| f.ok());
+            return extensions
+                .any(|f| f.key_bytes() == b"GNU.sparse.major" && f.value_bytes() == b"1")
+                && extensions
+                    .any(|f| f.key_bytes() == b"GNU.sparse.minor" && f.value_bytes() == b"0");
+        }
+        false
+    }
+
+    pub fn pax_sparse_name_slice(&mut self) -> Option<&[u8]> {
+        self.pax_extensions.as_ref().and_then(|pax| {
+            PaxExtensions::new(pax)
+                .filter_map(Result::ok)
+                .find(|f| f.key_bytes() == b"GNU.sparse.name")
+                .map(|f| f.value_bytes())
+        })
+    }
+
+    pub fn pax_sparse_name(&mut self) -> Option<Vec<u8>> {
+        self.pax_sparse_name_slice().map(<[u8]>::to_vec)
+    }
+
+    pub fn pax_sparse_realsize(&mut self) -> io::Result<u64> {
+        self.pax_sparse_name_slice()
+            .ok_or_else(|| other("PAX extension GNU.sparse.realsize not found"))
+            .and_then(|field| {
+                std::str::from_utf8(field)
+                    .map_err(|_| other("failed to read string"))?
+                    .parse::<u64>()
+                    .map_err(|_| other("failed to parse the real size"))
+            })
+    }
+
     fn path(&self) -> io::Result<Cow<'_, Path>> {
         bytes2path(self.path_bytes())
     }
