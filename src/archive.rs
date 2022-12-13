@@ -166,7 +166,7 @@ impl<R: BufRead + Unpin> Archive<R> {
     }
 }
 
-impl<R: Read + Unpin> Archive<R> {
+impl<R: Unpin> Archive<R> {
     /// Unwrap this archive, returning the underlying object.
     pub fn into_inner(self) -> Result<R, Self> {
         let Self { inner } = self;
@@ -176,7 +176,9 @@ impl<R: Read + Unpin> Archive<R> {
             Err(inner) => Err(Self { inner }),
         }
     }
+}
 
+impl<R: Read + Unpin> Archive<R> {
     /// Construct an stream over the entries in this archive.
     ///
     /// Note that care must be taken to consider each entry within an archive in
