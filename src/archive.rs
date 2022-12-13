@@ -326,7 +326,12 @@ impl<R: BufRead + Send + Unpin> EntriesInner<R> {
             }
 
             let mut fields = EntryFields::from(entry);
-            fields.long_pathname = self.gnu_longname.take();
+
+            fields.long_pathname = if is_recognized_header && fields.is_pax_sparse() {
+                fields.pax_sparse_name()
+            } else {
+                self.gnu_longname.take()
+            };
             fields.long_linkname = self.gnu_longlink.take();
             fields.pax_extensions = self.pax_extensions.take();
 
