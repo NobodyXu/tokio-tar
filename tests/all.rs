@@ -944,6 +944,24 @@ async fn extract_sparse() {
 }
 
 #[tokio::test]
+async fn pax_sparse() {
+    let rdr = Cursor::new(tar!("pax_sparse.tar"));
+    let mut ar = Archive::new(rdr);
+    let td = TempBuilder::new().prefix("tar-rs").tempdir().unwrap();
+    ar.unpack(td.path()).await.unwrap();
+
+    let mut s = String::new();
+    File::open(td.path().join("sparse_begin.txt"))
+        .await
+        .unwrap()
+        .read_to_string(&mut s)
+        .await
+        .unwrap();
+    assert_eq!(&s[..5], "test\n");
+    assert!(s[5..].chars().all(|x| x == '\u{0}'));
+}
+
+#[tokio::test]
 async fn path_separators() {
     let mut ar = Builder::new(Vec::new());
     let td = t!(TempBuilder::new().prefix("async-tar").tempdir());
