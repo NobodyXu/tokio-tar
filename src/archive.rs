@@ -83,7 +83,7 @@ impl<R: BufRead + Unpin> ArchiveBuilder<R> {
     }
 }
 
-impl<R: Read + Unpin> ArchiveBuilder<R> {
+impl<R> ArchiveBuilder<R> {
     /// Indicate whether extended file attributes (xattrs on Unix) are preserved
     /// when unpacking this archive.
     ///
