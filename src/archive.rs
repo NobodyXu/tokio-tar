@@ -27,11 +27,11 @@ use crate::{
 ///
 /// This archive can have an entry added to it and it can be iterated over.
 #[derive(Debug)]
-pub struct Archive<R: Read + Unpin> {
+pub struct Archive<R> {
     inner: Arc<ArchiveInner<R>>,
 }
 
-impl<R: Read + Unpin> Clone for Archive<R> {
+impl<R> Clone for Archive<R> {
     fn clone(&self) -> Self {
         Archive {
             inner: self.inner.clone(),
@@ -50,7 +50,7 @@ pub struct ArchiveInner<R> {
 }
 
 /// Configure the archive.
-pub struct ArchiveBuilder<R: Read + Unpin> {
+pub struct ArchiveBuilder<R> {
     obj: R,
     unpack_xattrs: bool,
     preserve_permissions: bool,
