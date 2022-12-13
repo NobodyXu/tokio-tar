@@ -147,21 +147,26 @@ impl<R> ArchiveBuilder<R> {
     }
 }
 
-impl<R: Read + Unpin> Archive<R> {
+impl<R: Read + Unpin> Archive<BufReader<R>> {
     /// Create a new archive with the underlying object as the reader.
-    pub fn new(obj: R) -> Archive<R> {
-        Archive {
-            inner: Arc::new(ArchiveInner {
-                unpack_xattrs: false,
-                preserve_permissions: false,
-                preserve_mtime: true,
-                ignore_zeros: false,
-                obj: Mutex::new(obj),
-                pos: 0.into(),
-            }),
-        }
+    pub fn new(obj: R) -> Self {
+        ArchiveBuilder::new(obj).build()
     }
 
+    /// Create a new archive with the underlying object as the reader.
+    pub fn with_buf_capacity(cap: usize, obj: R) -> Self {
+        ArchiveBuilder::with_buf_capacity(cap, obj).build()
+    }
+}
+
+impl<R: BufRead + Unpin> Archive<R> {
+    /// Create a new archive with the underlying object as the reader.
+    pub fn with_bufread(obj: R) -> Self {
+        ArchiveBuilder::with_bufread(obj).build()
+    }
+}
+
+impl<R: Read + Unpin> Archive<R> {
     /// Unwrap this archive, returning the underlying object.
     pub fn into_inner(self) -> Result<R, Self> {
         let Self { inner } = self;
