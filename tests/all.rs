@@ -12,7 +12,7 @@ use std::{
 };
 use tokio::{
     fs::{self, File},
-    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{self, AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
 };
 use tokio_stream::*;
 
@@ -72,7 +72,7 @@ async fn simple_concat() {
 
     async fn decode_names<R>(ar: &mut Archive<R>) -> Vec<String>
     where
-        R: AsyncRead + Unpin,
+        R: AsyncBufRead + Send + Unpin,
     {
         let mut names = Vec::new();
         let mut entries = t!(ar.entries());

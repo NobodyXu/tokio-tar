@@ -1,6 +1,7 @@
 use std::{
     cmp,
     collections::VecDeque,
+    future::poll_fn,
     path::Path,
     pin::Pin,
     sync::{
@@ -16,6 +17,7 @@ use tokio::{
     sync::Mutex,
 };
 use tokio_stream::*;
+use tokio_util::sync::ReusableBoxFuture;
 
 use crate::{
     entry::{EntryFields, EntryIo},
@@ -178,7 +180,7 @@ impl<R: Unpin> Archive<R> {
     }
 }
 
-impl<R: BufRead + Unpin> Archive<R> {
+impl<R: BufRead + Send + Unpin> Archive<R> {
     /// Construct an stream over the entries in this archive.
     ///
     /// Note that care must be taken to consider each entry within an archive in
@@ -187,21 +189,17 @@ impl<R: BufRead + Unpin> Archive<R> {
     /// corrupted.
     pub fn entries(&mut self) -> io::Result<Entries<R>> {
         if self.inner.pos.load(Ordering::SeqCst) != 0 {
-            return Err(other(
+            Err(other(
                 "cannot call entries unless archive is at \
                  position 0",
-            ));
+            ))
+        } else {
+            Ok(Entries::new(self.clone()))
         }
-
-        Ok(Entries {
-            archive: self.clone(),
-            current: (0, None, 0, None),
-            gnu_longlink: None,
-            gnu_longname: None,
-            pax_extensions: None,
-        })
     }
+}
 
+impl<R: BufRead + Unpin> Archive<R> {
     /// Construct an stream over the raw entries in this archive.
     ///
     /// Note that care must be taken to consider each entry within an archive in
@@ -221,7 +219,9 @@ impl<R: BufRead + Unpin> Archive<R> {
             current: (0, None, 0),
         })
     }
+}
 
+impl<R: BufRead + Send + Unpin> Archive<R> {
     /// Unpacks the contents tarball into the specified `dst`.
     ///
     /// This function will iterate over the entire contents of this tarball,
@@ -256,8 +256,7 @@ impl<R: BufRead + Unpin> Archive<R> {
     }
 }
 
-/// Stream of `Entry`s.
-pub struct Entries<R> {
+struct EntriesInner<R: BufRead + Send + Unpin> {
     archive: Archive<R>,
     current: (u64, Option<Header>, usize, Option<GnuExtSparseHeader>),
     gnu_longname: Option<Vec<u8>>,
@@ -265,78 +264,61 @@ pub struct Entries<R> {
     pax_extensions: Option<Vec<u8>>,
 }
 
-macro_rules! ready_opt_err {
-    ($val:expr) => {
-        match futures_core::ready!($val) {
-            Some(Ok(val)) => val,
-            Some(Err(err)) => return Poll::Ready(Some(Err(err))),
-            None => return Poll::Ready(None),
-        }
-    };
-}
+type EntriesInnerNextResult<R> = io::Result<Option<(Entry<Archive<R>>, Box<EntriesInner<R>>)>>;
 
-macro_rules! ready_err {
-    ($val:expr) => {
-        match futures_core::ready!($val) {
-            Ok(val) => val,
-            Err(err) => return Poll::Ready(Some(Err(err))),
-        }
-    };
-}
-
-impl<R: BufRead + Unpin> Stream for Entries<R> {
-    type Item = io::Result<Entry<Archive<R>>>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+impl<R: BufRead + Send + Unpin> EntriesInner<R> {
+    async fn next(mut self: Box<EntriesInner<R>>) -> EntriesInnerNextResult<R> {
         loop {
-            let archive = self.archive.clone();
+            let archive = &mut self.archive;
             let (next, current_header, current_header_pos, _) = &mut self.current;
-            let entry = ready_opt_err!(poll_next_raw(
-                archive,
-                next,
-                current_header,
-                current_header_pos,
-                cx
-            ));
+            let entry = if let Some(entry) =
+                poll_fn(|cx| poll_next_raw(archive, next, current_header, current_header_pos, cx))
+                    .await
+                    .transpose()?
+            {
+                entry
+            } else {
+                return Ok(None);
+            };
 
             let is_recognized_header =
                 entry.header().as_gnu().is_some() || entry.header().as_ustar().is_some();
             if is_recognized_header && entry.header().entry_type().is_gnu_longname() {
                 if self.gnu_longname.is_some() {
-                    return Poll::Ready(Some(Err(other(
+                    return Err(other(
                         "two long name entries describing \
                          the same member",
-                    ))));
+                    ));
                 }
 
                 let mut ef = EntryFields::from(entry);
-                let val = ready_err!(Pin::new(&mut ef).poll_read_all(cx));
+                let val = poll_fn(|cx| Pin::new(&mut ef).poll_read_all(cx)).await?;
                 self.gnu_longname = Some(val);
                 continue;
             }
 
             if is_recognized_header && entry.header().entry_type().is_gnu_longlink() {
                 if self.gnu_longlink.is_some() {
-                    return Poll::Ready(Some(Err(other(
+                    return Err(other(
                         "two long name entries describing \
                          the same member",
-                    ))));
+                    ));
                 }
                 let mut ef = EntryFields::from(entry);
-                let val = ready_err!(Pin::new(&mut ef).poll_read_all(cx));
+                let val = poll_fn(|cx| Pin::new(&mut ef).poll_read_all(cx)).await?;
                 self.gnu_longlink = Some(val);
                 continue;
             }
 
             if is_recognized_header && entry.header().entry_type().is_pax_local_extensions() {
                 if self.pax_extensions.is_some() {
-                    return Poll::Ready(Some(Err(other(
+                    return Err(other(
                         "two pax extensions entries describing \
                          the same member",
-                    ))));
+                    ));
                 }
                 let mut ef = EntryFields::from(entry);
-                let val = ready_err!(Pin::new(&mut ef).poll_read_all(cx));
+                let val = poll_fn(|cx| Pin::new(&mut ef).poll_read_all(cx)).await?;
                 self.pax_extensions = Some(val);
                 continue;
             }
@@ -346,19 +328,49 @@ impl<R: BufRead + Unpin> Stream for Entries<R> {
             fields.long_linkname = self.gnu_longlink.take();
             fields.pax_extensions = self.pax_extensions.take();
 
-            let archive = self.archive.clone();
             let (next, _, current_pos, current_ext) = &mut self.current;
 
-            ready_err!(poll_parse_sparse_header(
-                archive,
-                next,
-                current_ext,
-                current_pos,
-                &mut fields,
-                cx
-            ));
+            parse_sparse_header(archive, next, current_ext, current_pos, &mut fields).await?;
 
-            return Poll::Ready(Some(Ok(fields.into_entry())));
+            return Ok(Some((fields.into_entry(), self)));
+        }
+    }
+}
+
+/// Stream of `Entry`s.
+pub struct Entries<'a, R: BufRead + Send + Unpin + 'a>(
+    Option<ReusableBoxFuture<'a, EntriesInnerNextResult<R>>>,
+);
+
+impl<'a, R: BufRead + Send + Unpin + 'a> Entries<'a, R> {
+    fn new(archive: Archive<R>) -> Self {
+        let inner = Box::new(EntriesInner {
+            archive,
+            current: (0, None, 0, None),
+            gnu_longlink: None,
+            gnu_longname: None,
+            pax_extensions: None,
+        });
+
+        Self(Some(ReusableBoxFuture::new(inner.next())))
+    }
+}
+
+impl<R: BufRead + Send + Unpin> Stream for Entries<'_, R> {
+    type Item = io::Result<Entry<Archive<R>>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if let Some(boxed_fut) = self.0.as_mut() {
+            match futures_core::ready!(boxed_fut.poll(cx)) {
+                Ok(Some((entry, inner))) => {
+                    boxed_fut.set(inner.next());
+                    Poll::Ready(Some(Ok(entry)))
+                }
+                Ok(None) => Poll::Ready(None),
+                Err(err) => Poll::Ready(Some(Err(err))),
+            }
+        } else {
+            Poll::Ready(None)
         }
     }
 }
@@ -372,15 +384,21 @@ pub struct RawEntries<R: Read + Unpin> {
 impl<R: Read + Unpin> Stream for RawEntries<R> {
     type Item = io::Result<Entry<Archive<R>>>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let archive = self.archive.clone();
-        let (next, current_header, current_header_pos) = &mut self.current;
-        poll_next_raw(archive, next, current_header, current_header_pos, cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = Pin::into_inner(self);
+        let (next, current_header, current_header_pos) = &mut this.current;
+        poll_next_raw(
+            &mut this.archive,
+            next,
+            current_header,
+            current_header_pos,
+            cx,
+        )
     }
 }
 
 fn poll_next_raw<R: Read + Unpin>(
-    mut archive: Archive<R>,
+    archive: &mut Archive<R>,
     next: &mut u64,
     current_header: &mut Option<Header>,
     current_header_pos: &mut usize,
@@ -392,7 +410,7 @@ fn poll_next_raw<R: Read + Unpin>(
         // Seek to the start of the next header in the archive
         if current_header.is_none() {
             let delta = *next - archive.inner.pos.load(Ordering::SeqCst);
-            match futures_core::ready!(poll_skip(&mut archive, cx, delta)) {
+            match futures_core::ready!(poll_skip(&mut *archive, cx, delta)) {
                 Ok(_) => {}
                 Err(err) => return Poll::Ready(Some(Err(err))),
             }
@@ -405,7 +423,7 @@ fn poll_next_raw<R: Read + Unpin>(
 
         // EOF is an indicator that we are at the end of the archive.
         match futures_core::ready!(poll_try_read_all(
-            &mut archive,
+            &mut *archive,
             cx,
             header.as_mut_bytes(),
             current_header_pos,
@@ -476,21 +494,20 @@ fn poll_next_raw<R: Read + Unpin>(
     Poll::Ready(Some(Ok(ret.into_entry())))
 }
 
-fn poll_parse_sparse_header<R: Read + Unpin>(
-    mut archive: Archive<R>,
+async fn parse_sparse_header<R: Read + Unpin>(
+    archive: &mut Archive<R>,
     next: &mut u64,
     current_ext: &mut Option<GnuExtSparseHeader>,
     current_ext_pos: &mut usize,
     entry: &mut EntryFields<Archive<R>>,
-    cx: &mut Context<'_>,
-) -> Poll<io::Result<()>> {
+) -> io::Result<()> {
     if !entry.header.entry_type().is_gnu_sparse() {
-        return Poll::Ready(Ok(()));
+        return Ok(());
     }
 
     let gnu = match entry.header.as_gnu() {
         Some(gnu) => gnu,
-        None => return Poll::Ready(Err(other("sparse entry type listed but not GNU header"))),
+        None => return Err(other("sparse entry type listed but not GNU header")),
     };
 
     // Sparse files are represented internally as a list of blocks that are
@@ -567,15 +584,14 @@ fn poll_parse_sparse_header<R: Read + Unpin>(
 
             let ext = current_ext.as_mut().unwrap();
             while ext.is_extended() {
-                match futures_core::ready!(poll_try_read_all(
-                    &mut archive,
-                    cx,
-                    ext.as_mut_bytes(),
-                    current_ext_pos,
-                )) {
+                match poll_fn(|cx| {
+                    poll_try_read_all(&mut *archive, cx, ext.as_mut_bytes(), current_ext_pos)
+                })
+                .await
+                {
                     Ok(true) => {}
-                    Ok(false) => return Poll::Ready(Err(other("failed to read extension"))),
-                    Err(err) => return Poll::Ready(Err(err)),
+                    Ok(false) => return Err(other("failed to read extension")),
+                    Err(err) => return Err(err),
                 }
 
                 *next += 512;
@@ -586,20 +602,20 @@ fn poll_parse_sparse_header<R: Read + Unpin>(
         }
     }
     if cur != gnu.real_size()? {
-        return Poll::Ready(Err(other(
+        return Err(other(
             "mismatch in sparse file chunks and \
              size in header",
-        )));
+        ));
     }
     entry.size = cur;
     if remaining > 0 {
-        return Poll::Ready(Err(other(
+        return Err(other(
             "mismatch in sparse file chunks and \
              entry size in header",
-        )));
+        ));
     }
 
-    Poll::Ready(Ok(()))
+    Ok(())
 }
 
 impl<R: Read + Unpin> Read for Archive<R> {
