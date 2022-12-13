@@ -18,7 +18,14 @@ pub struct PaxExtension<'entry> {
     value: &'entry [u8],
 }
 
-pub fn pax_extensions(a: &[u8]) -> PaxExtensions {
+impl<'entry> PaxExtensions<'entry> {
+    /// Create new [`PaxExtensions`].
+    pub fn new(slice: &'entry [u8]) -> Self {
+        pax_extensions(slice)
+    }
+}
+
+pub fn pax_extensions(a: &[u8]) -> PaxExtensions<'_> {
     PaxExtensions {
         data: a.split(|a| *a == b'\n'),
     }
