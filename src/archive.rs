@@ -1,7 +1,8 @@
 use std::{
     cmp,
     collections::VecDeque,
-    future::poll_fn,
+    future::{poll_fn, Future},
+    ops::DerefMut,
     path::Path,
     pin::Pin,
     sync::{
@@ -22,6 +23,7 @@ use tokio_util::sync::ReusableBoxFuture;
 use crate::{
     entry::{EntryFields, EntryIo},
     error::TarError,
+    header::SparseEntry,
     other, Entry, GnuExtSparseHeader, GnuSparseHeader, Header,
 };
 
@@ -494,7 +496,7 @@ fn poll_next_raw<R: Read + Unpin>(
     Poll::Ready(Some(Ok(ret.into_entry())))
 }
 
-async fn parse_sparse_header<R: Read + Unpin>(
+async fn parse_sparse_header<R: BufRead + Unpin>(
     archive: &mut Archive<R>,
     next: &mut u64,
     current_ext: &mut Option<GnuExtSparseHeader>,
@@ -505,10 +507,59 @@ async fn parse_sparse_header<R: Read + Unpin>(
         return Ok(());
     }
 
-    let gnu = match entry.header.as_gnu() {
-        Some(gnu) => gnu,
-        None => return Err(other("sparse entry type listed but not GNU header")),
-    };
+    let mut sparse_map = Vec::<SparseEntry>::new();
+    let mut real_size = 0;
+
+    if entry.is_pax_sparse() {
+        real_size = entry.pax_sparse_realsize()?;
+
+        let mut num_bytes_read = 0;
+        let mut reader = archive.inner.obj.lock().await;
+
+        // All `u64`s can be represented in 20 decimal number, plus 1B for `\n`.
+        let mut buffer = String::with_capacity(21);
+
+        async fn read_decimal_line<R>(
+            reader: &mut R,
+            num_bytes_read: &mut usize,
+            buffer: &mut String,
+        ) -> io::Result<u64>
+        where
+            R: BufRead + Unpin,
+        {
+            buffer.clear();
+            *num_bytes_read += reader.read_line(buffer).await?;
+            buffer
+                .strip_suffix('\n')
+                .and_then(|s| s.parse::<u64>().ok())
+                .ok_or_else(|| other("failed to read a decimal line"))
+        }
+
+        let num_entries =
+            read_decimal_line(reader.deref_mut(), &mut num_bytes_read, &mut buffer).await?;
+        for _ in 0..num_entries {
+            let offset =
+                read_decimal_line(reader.deref_mut(), &mut num_bytes_read, &mut buffer).await?;
+            let size =
+                read_decimal_line(reader.deref_mut(), &mut num_bytes_read, &mut buffer).await?;
+            sparse_map.push(SparseEntry { offset, size });
+        }
+        let rem = 512 - (num_bytes_read % 512);
+        entry.size -= (num_bytes_read + rem) as u64;
+    } else if entry.header.entry_type().is_gnu_sparse() {
+        let gnu = match entry.header.as_gnu() {
+            Some(gnu) => gnu,
+            None => return Err(other("sparse entry type listed but not GNU header")),
+        };
+        real_size = gnu.real_size()?;
+        for block in gnu.sparse.iter() {
+            if !block.is_empty() {
+                let offset = block.offset()?;
+                let size = block.length()?;
+                sparse_map.push(SparseEntry { offset, size });
+            }
+        }
+    }
 
     // Sparse files are represented internally as a list of blocks that are
     // read. Blocks are either a bunch of 0's or they're data from the
@@ -537,14 +588,8 @@ async fn parse_sparse_header<R: Read + Unpin>(
         let data = &mut entry.data;
         let reader = archive.clone();
         let size = entry.size;
-        let mut add_block = |block: &GnuSparseHeader| -> io::Result<_> {
-            if block.is_empty() {
-                return Ok(());
-            }
-            let off = block.offset()?;
-            let len = block.length()?;
-
-            if (size - remaining) % 512 != 0 {
+        let mut add_block = |off: u64, len: u64| -> io::Result<_> {
+            if len != 0 && (size - remaining) % 512_u64 != 0 {
                 return Err(other(
                     "previous block in sparse file was not \
                      aligned to 512-byte boundary",
@@ -570,10 +615,10 @@ async fn parse_sparse_header<R: Read + Unpin>(
             data.push_back(EntryIo::Data(reader.clone().take(len)));
             Ok(())
         };
-        for block in gnu.sparse.iter() {
-            add_block(block)?
+        for block in sparse_map {
+            add_block(block.offset, block.size)?
         }
-        if gnu.is_extended() {
+        if entry.header.as_gnu().map(|gnu| gnu.is_extended()) == Some(true) {
             let started_header = current_ext.is_some();
             if !started_header {
                 let mut ext = GnuExtSparseHeader::new();
@@ -596,12 +641,14 @@ async fn parse_sparse_header<R: Read + Unpin>(
 
                 *next += 512;
                 for block in ext.sparse.iter() {
-                    add_block(block)?;
+                    if !block.is_empty() {
+                        add_block(block.offset()?, block.length()?)?;
+                    }
                 }
             }
         }
     }
-    if cur != gnu.real_size()? {
+    if cur != real_size {
         return Err(other(
             "mismatch in sparse file chunks and \
              size in header",
