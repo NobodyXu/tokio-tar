@@ -350,14 +350,8 @@ impl<R: Read + Unpin> EntryFields<R> {
     }
 
     pub fn is_pax_sparse(&mut self) -> bool {
-        if let Some(ref pax) = self.pax_extensions {
-            let mut extensions = PaxExtensions::new(pax).filter_map(|f| f.ok());
-            return extensions
-                .any(|f| f.key_bytes() == b"GNU.sparse.major" && f.value_bytes() == b"1")
-                && extensions
-                    .any(|f| f.key_bytes() == b"GNU.sparse.minor" && f.value_bytes() == b"0");
-        }
-        false
+        self.pax_sparse(b"GNU.sparse.major") == Some(b"1")
+            && self.pax_sparse(b"GNU.sparse.minor") == Some(b"0")
     }
 
     fn pax_sparse(&mut self, key: &[u8]) -> Option<&[u8]> {
