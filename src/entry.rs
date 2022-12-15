@@ -360,21 +360,21 @@ impl<R: Read + Unpin> EntryFields<R> {
         false
     }
 
-    pub fn pax_sparse_name_slice(&mut self) -> Option<&[u8]> {
+    fn pax_sparse(&mut self, key: &[u8]) -> Option<&[u8]> {
         self.pax_extensions.as_ref().and_then(|pax| {
             PaxExtensions::new(pax)
                 .filter_map(Result::ok)
-                .find(|f| f.key_bytes() == b"GNU.sparse.name")
+                .find(|f| f.key_bytes() == key)
                 .map(|f| f.value_bytes())
         })
     }
 
     pub fn pax_sparse_name(&mut self) -> Option<Vec<u8>> {
-        self.pax_sparse_name_slice().map(<[u8]>::to_vec)
+        self.pax_sparse(b"GNU.sparse.name").map(<[u8]>::to_vec)
     }
 
     pub fn pax_sparse_realsize(&mut self) -> io::Result<u64> {
-        self.pax_sparse_name_slice()
+        self.pax_sparse(b"GNU.sparse.realsize")
             .ok_or_else(|| other("PAX extension GNU.sparse.realsize not found"))
             .and_then(|field| {
                 std::str::from_utf8(field)
